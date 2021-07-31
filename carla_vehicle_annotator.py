@@ -447,9 +447,21 @@ def get_vehicle_class(vehicles, json_path=None):
 ### PART 5
 ### Function to save output ###########################
 #######################################################
+def save_reid_dataset(path, carla_img, reid_recs, image, min_width=32, min_height=32):
+    dir_name = path + 'reid_dataset'
+    if not os.path.exists(dir_name):
+        os.makedirs(dir_name)
+    for i, [[(x0, y0), (x1, y1)], vid] in enumerate(reid_recs): 
+        filename = os.path.join(dir_name, '{:0>4d}_c0s0_{:0>6d}_{:0>2d}.jpg'.format(vid, carla_img.frame, i))
+        im_crop = image.crop((x0, y0, x1, y1))
+        if im_crop.width < min_width or im_crop.height < min_height:
+            print(vid, x0, y0, x1, y1, im_crop.width, im_crop.height, '--X--')
+            continue
+        print(vid, x0, y0, x1, y1, im_crop.width, im_crop.height, '--O--')
+        im_crop.save(filename)
 
 ### Use this function to save the rgb image (with and without bounding box) and bounding boxes data 
-def save_output(carla_img, bboxes, vehicle_class=None, old_bboxes=None, old_vehicle_class=None, cc_rgb=carla.ColorConverter.Raw, path='', save_patched=False, add_data=None, out_format='pickle'):
+def save_output(carla_img, bboxes, vehicle_class=None, old_bboxes=None, old_vehicle_class=None, cc_rgb=carla.ColorConverter.Raw, path='', save_patched=False, add_data=None, out_format='pickle', is_reid=False, vehicles=None):
     carla_img.save_to_disk(path + 'out_rgb/%06d.png' % carla_img.frame, cc_rgb)
 
     out_dict = {}
@@ -487,14 +499,23 @@ def save_output(carla_img, bboxes, vehicle_class=None, old_bboxes=None, old_vehi
         img_rgb[:,:,2] = img_bgra[:,:,0]
         img_rgb = np.uint8(img_rgb)
         image = Image.fromarray(img_rgb, 'RGB')
+        image_copy = image.copy()
         img_draw = ImageDraw.Draw(image)  
-        for crop in bboxes:
+        if is_reid:
+            reid_recs = []
+            assert len(bboxes) == len(vehicles)
+        for crop, v in zip(bboxes, vehicles):
             u1 = int(crop[0,0])
             v1 = int(crop[0,1])
             u2 = int(crop[1,0])
             v2 = int(crop[1,1])
             crop_bbox = [(u1,v1),(u2,v2)]
             img_draw.rectangle(crop_bbox, outline ="red")
+            # for ReID dataset
+            if is_reid:
+                reid_recs.append([crop_bbox, v.id])
+        if is_reid:
+            save_reid_dataset(path, carla_img, reid_recs, image_copy)
         filename = path + 'out_rgb_bbox/%06d.png' % carla_img.frame
         if not os.path.exists(os.path.dirname(filename)):
             os.makedirs(os.path.dirname(filename))

@@ -47,6 +47,7 @@ save_depth = False
 save_segm = False
 save_lidar = False
 tick_sensor = 1
+# tick_sensor = 0.1
 
 def main():
 
@@ -55,7 +56,7 @@ def main():
     argparser.add_argument(
         '--host',
         metavar='H',
-        default='127.0.0.1',
+        default='10.63.240.115',
         help='IP of the host server (default: 127.0.0.1)')
     argparser.add_argument(
         '-p', '--port',
@@ -75,6 +76,10 @@ def main():
         default=8000,
         type=int,
         help='port to communicate with TM (default: 8000)')
+    argparser.add_argument(
+        '--reid',
+        action='store_true',
+        help='Save to ReID dataset')
 
     args = argparser.parse_args()
     
@@ -251,7 +256,7 @@ def main():
                     depth_img.save_to_disk('out_depth/%06d.png' % depth_img.frame, cc_depth_log)
                 depth_meter = cva.extract_depth(depth_img)
                 filtered, removed =  cva.auto_annotate(vehicles, cam, depth_meter, json_path='vehicle_class_json_file.txt')
-                cva.save_output(rgb_img, filtered['bbox'], filtered['class'], removed['bbox'], removed['class'], save_patched=True, out_format='json')
+                cva.save_output(rgb_img, filtered['bbox'], filtered['class'], removed['bbox'], removed['class'], save_patched=True, out_format='json', is_reid=args.reid, vehicles=filtered['vehicles'])
                 
                 # Uncomment if you want to save the data in darknet format
                 #cva.save2darknet(filtered['bbox'], filtered['class'], rgb_img)
