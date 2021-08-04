@@ -47,7 +47,7 @@ save_depth = False
 save_segm = False
 save_lidar = False
 tick_sensor = 1
-# tick_sensor = 0.1
+# tick_sensor = 0.4
 
 def main():
 
@@ -69,7 +69,13 @@ def main():
         metavar='N',
         default=50,
         type=int,
-        help='number of vehicles (default: 10)')
+        help='number of vehicles (default: 50)')
+    argparser.add_argument(
+        '-w', '--number-of-walkers',
+        metavar='W',
+        default=50,
+        type=int,
+        help='number of walkers (default: 50)')
     argparser.add_argument(
         '-tm_p', '--tm_port',
         metavar='P',
@@ -85,13 +91,15 @@ def main():
     
     vehicles_list = []
     nonvehicles_list = []
+    walkers_list = []
+    all_id = []
     client = carla.Client(args.host, args.port)
     client.set_timeout(10.0)
 
     try:
 
         traffic_manager = client.get_trafficmanager(args.tm_port)
-        traffic_manager.set_global_distance_to_leading_vehicle(2.0)
+        traffic_manager.set_global_distance_to_leading_vehicle(1.0)
         world = client.get_world()
 
  
@@ -107,9 +115,11 @@ def main():
             synchronous_master = False
 
         blueprints = world.get_blueprint_library().filter('vehicle.*')
+        blueprintsWalkers = world.get_blueprint_library().filter('walker.pedestrian.*')
 
         spawn_points = world.get_map().get_spawn_points()
         number_of_spawn_points = len(spawn_points)
+        # print('spawn_points no:', len(spawn_points))  
 
         if args.number_of_vehicles < number_of_spawn_points:
             random.shuffle(spawn_points)
@@ -139,6 +149,7 @@ def main():
             blueprint.set_attribute('role_name', 'autopilot')
             batch.append(SpawnActor(blueprint, transform).then(SetAutopilot(FutureActor, True)))
             spawn_points.pop(0)
+        # print('spawn_points no:', len(spawn_points))  
 
         for response in client.apply_batch_sync(batch, synchronous_master):
             if response.error:
@@ -147,7 +158,100 @@ def main():
                 vehicles_list.append(response.actor_id)
 
         print('Created %d npc vehicles \n' % len(vehicles_list))
+        # print('vehicles_lis:', vehicles_list)
+        max_vehicle_id = max(vehicles_list)
+        print('max_vehicle_id:', max_vehicle_id)  
+        assert max_vehicle_id <= 9999, "max_vehicle_id out of range" 
         
+
+        # -------------
+        # Spawn Walkers
+        # -------------
+        # some settings
+        percentagePedestriansRunning = 0.0      # how many pedestrians will run
+        percentagePedestriansCrossing = 0.0     # how many pedestrians will walk through the road
+        # 1. take all the random locations to spawn
+        walkers_spawn_points = []
+        for i in range(args.number_of_walkers):
+            spawn_point = carla.Transform()
+            loc = world.get_random_location_from_navigation()
+            if (loc != None):
+                spawn_point.location = loc
+                walkers_spawn_points.append(spawn_point)
+        # 2. we spawn the walker object
+        batch = []
+        walker_speed = []
+        for spawn_point in walkers_spawn_points:
+            walker_bp = random.choice(blueprintsWalkers)
+            # set as not invincible
+            if walker_bp.has_attribute('is_invincible'):
+                walker_bp.set_attribute('is_invincible', 'false')
+            # set the max speed
+            if walker_bp.has_attribute('speed'):
+                if (random.random() > percentagePedestriansRunning):
+                    # walking
+                    walker_speed.append(walker_bp.get_attribute('speed').recommended_values[1])
+                else:
+                    # running
+                    walker_speed.append(walker_bp.get_attribute('speed').recommended_values[2])
+            else:
+                print("Walker has no speed")
+                walker_speed.append(0.0)
+            batch.append(SpawnActor(walker_bp, spawn_point))
+            # spawn_points.pop(0) # Ryan
+        results = client.apply_batch_sync(batch, True)
+        walker_speed2 = []
+        for i in range(len(results)):
+            if results[i].error:
+                logging.error(results[i].error)
+            else:
+                walkers_list.append({"id": results[i].actor_id})
+                walker_speed2.append(walker_speed[i])
+        walker_speed = walker_speed2
+        # print('walkers_list:', walkers_list)
+        max_walker_id = max([i.get('id') for i in walkers_list])
+        print('max_walker_id:', max_walker_id)
+        assert max_walker_id <= 9999, "max_walker_id out of range"
+        # 3. we spawn the walker controller
+        batch = []
+        walker_controller_bp = world.get_blueprint_library().find('controller.ai.walker')
+        for i in range(len(walkers_list)):
+            batch.append(SpawnActor(walker_controller_bp, carla.Transform(), walkers_list[i]["id"]))
+        results = client.apply_batch_sync(batch, True)
+        for i in range(len(results)):
+            if results[i].error:
+                logging.error(results[i].error)
+            else:
+                walkers_list[i]["con"] = results[i].actor_id
+        # 4. we put altogether the walkers and controllers id to get the objects from their id
+        for i in range(len(walkers_list)):
+            all_id.append(walkers_list[i]["con"])
+            all_id.append(walkers_list[i]["id"])
+        all_actors = world.get_actors(all_id)
+
+        # wait for a tick to ensure client receives the last transform of the walkers we have just created
+        if not synchronous_master:
+            world.wait_for_tick()
+        else:
+            world.tick()
+
+        # 5. initialize each controller and set target to walk to (list is [controler, actor, controller, actor ...])
+        # set how many pedestrians can cross the road
+        world.set_pedestrians_cross_factor(percentagePedestriansCrossing)
+        for i in range(0, len(all_id), 2):
+            # start walker
+            all_actors[i].start()
+            # set walk to random point
+            all_actors[i].go_to_location(world.get_random_location_from_navigation())
+            # max speed
+            all_actors[i].set_max_speed(float(walker_speed[int(i/2)]))
+
+        print('spawned %d vehicles and %d walkers, press Ctrl+C to exit.' % (len(vehicles_list), len(walkers_list)))
+
+        # example of how to use parameters
+        traffic_manager.global_percentage_speed_difference(30.0)
+
+
         # -----------------------------
         # Spawn ego vehicle and sensors
         # -----------------------------
@@ -228,12 +332,15 @@ def main():
             idx = idx+1
             print('LIDAR ready')
 
+
         # Begin the loop
         time_sim = 0
         while True:
             # Extract the available data
             nowFrame = world.tick()
 
+            # print('nowFrame:', nowFrame, time_sim, tick_sensor) 
+            # print('fixed_delta_seconds:', settings.fixed_delta_seconds)
             # Check whether it's time to capture data
             if time_sim >= tick_sensor:
                 data = [retrieve_data(q,nowFrame) for q in q_list]
@@ -244,12 +351,14 @@ def main():
                     continue
                 
                 vehicles_raw = world.get_actors().filter('vehicle.*')
+                walkers_raw = world.get_actors().filter('walker.pedestrian.*')
+                all_raw = list(vehicles_raw) + list(walkers_raw)
                 snap = data[tick_idx]
                 rgb_img = data[cam_idx]
                 depth_img = data[depth_idx]
                 
                 # Attach additional information to the snapshot
-                vehicles = cva.snap_processing(vehicles_raw, snap)
+                vehicles = cva.snap_processing(all_raw, snap)
 
                 # Save depth image, RGB image, and Bounding Boxes data
                 if save_depth:
@@ -296,6 +405,13 @@ def main():
 
         print('destroying %d nonvehicles' % len(nonvehicles_list))
         client.apply_batch([carla.command.DestroyActor(x) for x in nonvehicles_list])
+
+        # stop walker controllers (list is [controller, actor, controller, actor ...])
+        for i in range(0, len(all_id), 2):
+            all_actors[i].stop()
+
+        print('\ndestroying %d walkers' % len(walkers_list))
+        client.apply_batch([carla.command.DestroyActor(x) for x in all_id])
 
         time.sleep(0.5)
 
